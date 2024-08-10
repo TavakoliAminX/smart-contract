@@ -1,143 +1,122 @@
-// SPDX-License-Identifier: GPL-3.0
-
-pragma solidity >=0.8.5 <=0.8.20;
-
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.20;
 contract Auction {
+    address payable public owner;
+    uint public startTime;
+    uint public endTime;
+    string public ipfs;
 
-    address public owner;
-
-    address public benecificiary;    
-
-    uint public auctionStartTime;   
-    uint public auctionEndTime;     
-
-    uint public highestBid;         
-    address public highestBider;    
-
-    mapping(address => uint) pendingRefunds;    
-
-    bool ended;                 
-
-    struct Bid {
-        address bider;
-        uint bidPrice;
+    enum State {
+        Started, 
+        Running,
+        Ended, 
+        Canceled
     }
-    Bid[] internal bids;        
-                                
+    State public state;
 
-    constructor() {
-        owner = msg.sender;
+    uint public Bid;
+    address payable public Bidder;
+
+    mapping(address => uint) public bids;
+    
+    uint Increment;
+
+    bool public Finalized = false;
+
+    constructor(){
+        owner = payable(msg.sender);
+        state = State.Running;
+        startTime = block.number;
+        endTime = startTime + 40320;
+
+        ipfs = "";
+
+        Increment = 100;
     }
 
-    modifier onlyOwner {
-        require(msg.sender == owner, "Only Owner can start the auction!");
+    modifier notOwner(){
+        require(msg.sender != owner);
+        _;
+    }
+    modifier onlyOwner(){
+        require(msg.sender == owner);
+        _;
+    }
+    modifier afterStar(){
+        require(block.number >= startTime);
+        _;
+    }
+    modifier beforeEnd(){
+        require(block.number != endTime);
         _;
     }
 
-    function startAuction(address _benecificiary, uint _basePrice, uint _deadLineDur) public onlyOwner {
-
-        benecificiary = _benecificiary;
-
-        highestBid = _basePrice;
-        highestBider = _benecificiary;
-    
-        auctionStartTime = block.timestamp;
-        auctionEndTime = auctionStartTime + _deadLineDur;
-    }
-
-
-    modifier isValidTime() {
-        
-        require(block.timestamp < auctionEndTime, "Auction Ended!");
-        _;
-    }
-
-
-    modifier isHighestBid() {
-
-        require(msg.value > highestBid, "Value is less than highestBid!");
-        _;
-    }
-
-
-    function bid() public payable isValidTime  isHighestBid {
-
-        
-        
-        if(highestBider != benecificiary)
-        
-            pendingRefunds[highestBider] += highestBid;
-
-        
-        highestBid = msg.value;
-        highestBider = msg.sender;
-
-        bids.push( Bid(highestBider, highestBid) );
-    }
-
-
-    
-    function refund() public returns(bool) {
-
-    
-        require(ended == true, "Auction dosn't ended!");
-        
-        uint amount = pendingRefunds[msg.sender];
-
-        require(amount>0, "Your refund amount is Zero!");
-
-        
-        bool result = paySend(msg.sender, amount);
-        if(result) {
-            
-            pendingRefunds[msg.sender] = 0;
-            return true;
-        } else {
-            
-            return false;
+    function min(uint a, uint b) pure internal returns(uint){
+        if (a <= b){
+            return a;
+        }else{
+            return b;
         }
     }
 
+    function cancel() public beforeEnd onlyOwner{
+        state = State.Canceled;
+    }
 
-    function payToBeneficiary() public onlyOwner returns(bool) {
+    function place() public payable notOwner afterStar beforeEnd returns(bool){
 
-        require(ended == true, "Auction dosn't ended!");
-       
-        bool result = paySend(benecificiary, highestBid);
-        if(result) {
-            
+        require(state == State.Running);
+        uint currentBid = bids[msg.sender] + msg.value;
+
+        require(currentBid > Bid);
+
+        bids[msg.sender] = currentBid;
+
+        if(currentBid <= bids[Bidder]){
+            Bid = min(currentBid + Increment, bids[Bidder]);
+        }else{
+            Bid = min(currentBid, bids[Bidder] + Increment);
+            Bidder = payable(msg.sender);
         }
-
-        return result;
+        return true;
     }
 
+    function finaliz() public{
 
-    function endAuction() public onlyOwner {
+        require(state == State.Canceled || block.number > endTime);
 
-        require(block.timestamp >= auctionEndTime, "Auction can't end at this time!");
+        require(msg.sender == owner || bids[msg.sender] > 0);
 
-        ended = true;
-    }
+        address payable recipient;
+        uint value;
+
+        if(state == State.Canceled){
+            recipient = payable(msg.sender);
+            value = bids[msg.sender];
+
+        }else{
+
+            if(msg.sender == owner && Finalized == false){
+                recipient = owner;
+                value = Bid;
+
+                Finalized = true;
+
+            }else{
+                if(msg.sender == Bidder){
+                    recipient = Bidder;
+                    value = bids[Bidder] - Bid;
+
+                }else{
+                    recipient = payable(msg.sender);
+                    value = bids[msg.sender];
+                }
+            }
 
 
-    function getBids() public view returns(Bid[] memory) {
-        return bids;
-    }
+            bids[recipient] = 0;
 
-
-    function getWinner() public view returns(address, uint) {
-        return (highestBider, highestBid);
-    }
-
-
-    function paySend(address To, uint amount) public returns(bool) {
-
-        require(address(this).balance >= amount, "Not Enough Balance!");
-
-        bool result = payable(To).send(amount);
-
-        require(result == true, "Failure in payment via send!");
-
-        return result;
+            recipient.transfer(value);
+        }
     }
 }
